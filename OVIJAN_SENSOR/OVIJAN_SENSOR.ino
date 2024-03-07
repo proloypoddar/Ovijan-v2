@@ -1,10 +1,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include "DHT.h"
-
 const char* ssid = "SHARINGAN";
 const char* password = "9830020622";
-
 #define DHTPIN 2    
 #define DHTTYPE DHT11   
 
