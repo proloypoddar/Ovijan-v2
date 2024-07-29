@@ -1,58 +1,116 @@
-#include <WiFi.h>
-#include <WebServer.h>
 #include "DHT.h"
-const char* ssid = "SHARINGAN";
-const char* password = "9830020622";
-#define DHTPIN 2    
-#define DHTTYPE DHT11   
+#include <MQ131.h>
 
+// DHT11 sensor
+#define DHTPIN 6     // Digital pin connected to the DHT sensor
+#define DHTTYPE DHT11   // DHT 11
 DHT dht(DHTPIN, DHTTYPE);
-WebServer server(80);
 
-void handleRoot() {
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-  String ipAddress = WiFi.localIP().toString(); // Get the ESP32's IP address
-  
-  String s = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>OVIJAN v2 Sensors Value</title>";
-  s += "<style>body {font-family: Arial, sans-serif; text-align: center;} #data {border: 2px solid #000; padding: 20px; margin: 0 auto; max-width: 300px;}</style>";
-  s += "<script>function fetchData() {var xhr = new XMLHttpRequest(); xhr.onreadystatechange = function() {if (xhr.readyState == XMLHttpRequest.DONE) {if (xhr.status == 200) {var data = JSON.parse(xhr.responseText); document.getElementById('temperature').innerHTML = 'Temperature: ' + data.temperature + ' &deg;C'; document.getElementById('humidity').innerHTML = 'Humidity: ' + data.humidity + ' %'; document.getElementById('ipAddress').innerHTML = 'IP Address: ' + data.ipAddress;} else {console.log('Error fetching data.');}}}; xhr.open('GET', '/data', true); xhr.send();} setInterval(fetchData, 2000);</script>";
-  s += "</head><body><h1>OVIJAN v2 Sensors Value</h1><div id='data'><p id='temperature'>Loading...</p><p id='humidity'>Loading...</p><p id='ipAddress'>Loading...</p></div></body></html>";
-  server.send(200, "text/html", s);
-}
+// MQ131 sensor
+#define HEATER_PIN 2
+#define SENSOR_PIN A0
+#define LOAD_RESISTANCE 1000000 // 1 MOhm
+#define SENSOR_TYPE LOW_CONCENTRATION
 
-void handleData() {
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-  String ipAddress = WiFi.localIP().toString(); // Get the ESP32's IP address
-  
-  String data = "{\"temperature\":" + String(t) + ",\"humidity\":" + String(h) + ",\"ipAddress\":\"" + ipAddress + "\"}";
-  server.send(200, "application/json", data);
-}
+// MP135 sensor
+#define MP135_PIN A4
+
+// MQ2 sensor
+#define MQ2_PIN A7
+
+bool mq131_calibrated = false;
 
 void setup() {
   Serial.begin(9600);
-  delay(10);
-  
-  WiFi.begin(ssid, password);
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-  
+
+  // Initialize DHT11 sensor
   dht.begin();
   
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/data", HTTP_GET, handleData);
-  server.begin();
-  Serial.println("HTTP server started");
+  // Initialize MQ131 sensor
+  MQ131.begin(HEATER_PIN, SENSOR_PIN, SENSOR_TYPE, LOAD_RESISTANCE);
 }
 
 void loop() {
-  server.handleClient();
+  // Read temperature and humidity from DHT11 sensor
+  float humidity = dht.readHumidity();
+  float temperatureC = dht.readTemperature();
+  float temperatureF = dht.readTemperature(true);
+  
+  if (isnan(humidity) || isnan(temperatureC) || isnan(temperatureF)) {
+    Serial.println("Failed to read from DHT sensor!");
+  } else {
+    Serial.print("Humidity: ");
+    Serial.print(humidity);
+    Serial.print(" %, Temperature: ");
+    Serial.print(temperatureC);
+    Serial.print(" C / ");
+    Serial.print(temperatureF);
+    Serial.println(" F");
+  }
+
+  // Calibrate and read ozone concentration from MQ131 sensor
+  if (!mq131_calibrated) {
+    MQ131.sample();
+    float o3_ppm = MQ131.getO3(PPM);
+    if (!isnan(o3_ppm)) {
+      mq131_calibrated = true;
+    }
+  }
+
+  if (mq131_calibrated) {
+    float o3_ppm = MQ131.getO3(PPM);
+    float o3_ppb = MQ131.getO3(PPB);
+    float o3_mg_m3 = MQ131.getO3(MG_M3);
+    float o3_ug_m3 = MQ131.getO3(UG_M3);
+    
+    Serial.print("O3 (PPM): ");
+    Serial.print((isnan(o3_ppm) ? 0 : o3_ppm)); // Handle NaN value
+    Serial.print(", O3 (PPB): ");
+    Serial.print((isnan(o3_ppb) ? 0 : o3_ppb)); // Handle NaN value
+    Serial.print(", O3 (mg/m3): ");
+    Serial.print(o3_mg_m3);
+    Serial.print(", O3 (ug/m3): ");
+    Serial.println(o3_ug_m3);
+  }
+
+  // Read MP135 sensor value
+  int mp135_value = analogRead(MP135_PIN);
+  String airQuality;
+  if (mp135_value < 200) {
+    airQuality = "Good";
+  } else if (mp135_value < 400) {
+    airQuality = "Moderate";
+  } else if (mp135_value < 600) {
+    airQuality = "Unhealthy for Sensitive Groups";
+  } else if (mp135_value < 800) {
+    airQuality = "Unhealthy";
+  } else {
+    airQuality = "Very Unhealthy";
+  }
+  
+  Serial.print("Air Quality: ");
+  Serial.print(airQuality);
+  Serial.print(", MP135 Value: ");
+  Serial.println(mp135_value);
+
+  // Read MQ2 sensor value and identify gases
+  int mq2_value = analogRead(MQ2_PIN);
+  String detectedGas;
+  if (mq2_value < 200) {
+    detectedGas = "Clean Air";
+  } else if (mq2_value < 400) {
+    detectedGas = "LPG";
+  } else if (mq2_value < 600) {
+    detectedGas = "CO";
+  } else {
+    detectedGas = "Smoke";
+  }
+  
+  Serial.print("MQ2 Value: ");
+  Serial.print(mq2_value);
+  Serial.print(", Detected Gas: ");
+  Serial.println(detectedGas);
+
+  // Wait 10 seconds before next measurement
+  delay(10000);
 }
